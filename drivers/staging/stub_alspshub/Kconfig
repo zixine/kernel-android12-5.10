@@ -1,0 +1,5 @@
+config STUB_ALSPSHUB
+    tristate "Stub ALS/PS Hub module"
+    default n
+    help
+      Just for testing purpose.
