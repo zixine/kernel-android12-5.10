@@ -104,7 +104,7 @@ jobs:
         run: |
           cd gki/common
           echo "[6/12] Setup SukiSU & SUSFS"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s tmp-builtin
+          curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
           git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
           rm -rf sus/.git
           susfs=sus/kernel_patches
