@@ -71,13 +71,14 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10 --depth=1
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j$(nproc --all)
 
-      - name: Fetch User Kernel Source (Zixine)
+      - name: Update kernel source for GKI 5.10
         run: |
           cd gki/common
-          # Mengambil source dari zixine branch mglru
-          git remote add zixine https://github.com/zixine/kernel-android12-5.10.git
-          git fetch -j12 zixine
-          git checkout -b build-kernel zixine/mglru
+          git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
+          git fetch -j12 rama
+          git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
+          # Setup KernelSU-Mambosu
+          rm -rf drivers/staging/kernelsu
 
       - name: Apply Snapdragon Performance Patch
         if: github.event.inputs.performance_patch == 'Snapdragon'
