@@ -23,6 +23,7 @@ on:
         options:
           - 'r536225 (Clang 19)'
           - 'r547379 (Clang 20)'
+          - 'r589343 (Clang 21)' # <--- Opsi Baru
       performance_patch:
         description: 'Select Device SoC for Performance Tuning'
         required: true
@@ -71,14 +72,19 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10 --depth=1
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j$(nproc --all)
 
-      - name: Update kernel source for GKI 5.10
+      - name: Update kernel source for GKI 5.10 (Rama)
         run: |
           cd gki/common
+          echo "Switching source to Rama..."
           git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
           git fetch -j12 rama
           git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
-          # Setup KernelSU-Mambosu
-          rm -rf drivers/staging/kernelsu
+          
+          # Membersihkan KernelSU lama jika ada, agar MamboSu bisa masuk
+          if [ -d "drivers/staging/kernelsu" ]; then
+            echo "🗑️ Removing existing KernelSU folder..."
+            rm -rf drivers/staging/kernelsu
+          fi
 
       - name: Apply Snapdragon Performance Patch
         if: github.event.inputs.performance_patch == 'Snapdragon'
@@ -104,10 +110,8 @@ jobs:
         run: |
           cd gki/common
           echo "[6/12] Setup MamboSu & SUSFS"
-          # Mengambil script MamboSu sesuai referensi commit linastorvaldz
           curl -LSs "https://raw.githubusercontent.com/MamboSu/MamboSu/main/kernel/setup.sh" | bash -s main
           
-          # Setup SUSFS (Kompatibel dengan MamboSu karena basisnya KSU)
           git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
           rm -rf sus/.git
           susfs=sus/kernel_patches
@@ -220,7 +224,6 @@ jobs:
           if [ -n "$KERNEL_NAME_INPUT" ]; then
             SUFFIX="-$KERNEL_NAME_INPUT"
           fi
-          # Mengubah Suffix menjadi Mambo-SuS
           SUFFIX="$SUFFIX"
 
           if [ "$PERFORMANCE_PATCH" = "Snapdragon" ]; then
@@ -245,14 +248,22 @@ jobs:
           if [ "${{ github.event.inputs.clang_version }}" == "r536225 (Clang 19)" ]; then
             CLANG_VER="clang-r536225"
             CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz"
-          else
+          elif [ "${{ github.event.inputs.clang_version }}" == "r547379 (Clang 20)" ]; then
             CLANG_VER="clang-r547379"
             CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/62cdcefa89e31af2d72c366e8b5ef8db84caea62/clang-r547379.tar.gz"
+          else
+            # Konfigurasi untuk Clang 21
+            CLANG_VER="clang-r589343"
+            CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r589343.tar.gz"
           fi
+          
           echo "CLANG_VER=$CLANG_VER" >> $GITHUB_ENV
           mkdir -p prebuilts-master/clang/host/linux-x86/$CLANG_VER
           cd prebuilts-master/clang/host/linux-x86
+          
+          echo "Downloading Clang from: $CLANG_URL"
           curl -L "${CLANG_URL}" | tar -xz -C $CLANG_VER
+          
           rm -rf clang-r416183b
           ln -sf $CLANG_VER clang-r416183b
 
