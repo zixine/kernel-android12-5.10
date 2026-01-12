@@ -100,19 +100,57 @@ jobs:
           # Menghapus baris ke-2 yang mungkin berisi setting pengganggu
           sed -i '2d' gki/common/build.config.gki
 
-      - name: Setup SukiSU & SUSFS
+      
+      - name: Setup MamboSU & Hook Method
+        working-directory: gki/common
         run: |
-          cd gki/common
-          echo "[6/12] Setup SukiSU & SUSFS"
-          curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
-          git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
-          rm -rf sus/.git
-          susfs=sus/kernel_patches
-          cp -r $susfs/fs .
-          cp -r $susfs/include .
-          cp -r $susfs/50_add_susfs_in_gki-android12-5.10.patch .
-          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
-          echo "[✓] SUSFS patched"
+          echo " Setup MamboSU/kowsu"
+          
+          # 1. Remove existing KernelSU drivers
+          for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
+            if [ -d $KSU_PATH ]; then
+              echo "MamboSU driver found in $KSU_PATH, Removing..."
+              KSU_DIR=$(dirname "$KSU_PATH")
+              [ -f "$KSU_DIR/Kconfig" ] && sed -i '/kernelsu/d' $KSU_DIR/Kconfig
+              [ -f "$KSU_DIR/Makefile" ] && sed -i '/kernelsu/d' $KSU_DIR/Makefile
+              rm -rf $KSU_PATH
+            fi
+          done
+          echo "✅ Existing MamboSU drivers removed"
+          
+          # 2. Setup KernelSU method
+          HOOK_METHOD="${{ github.event.inputs.hook_method }}"
+          
+          if [ "$HOOK_METHOD" = "susfs" ]; then
+             echo "➡️ Mode: SuSFS (Using rsuntk/KernelSU setup -> branch susfs-rksu-master)"
+             curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s susfs-rksu-master
+          else
+             echo "➡️ Mode: Kprobes/Rissu (Using RapliVx/KernelSU setup -> branch master)"
+             curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
+          fi
+          
+          # 3. Apply Manager Support Patch manager MamboSU
+          echo "🛠️ Applying MamboSU Manager Support Patch..."
+          curl -LSs "https://raw.githubusercontent.com/Kingfinik98/gki-builder/15ddb8c469eab27491d5bb0f8f66b7fe2c15d0d7/kernel-patches/ksu/rksu-add-mambosu-manager-support.patch" -o /tmp/rksu_manager.patch
+          cd KernelSU
+          patch -p1 < /tmp/rksu_manager.patch
+          cd ..
+          echo "✅ Manager Patch Applied"
+          
+          # 4. Apply SusFS (Kernel Side) 
+          if [ "$HOOK_METHOD" = "susfs" ]; then
+             echo "➡️ Applying SusFS Kernel Patches (Simonpunk)..."
+             git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
+             rm -rf sus/.git
+             susfs=sus/kernel_patches
+             cp -r $susfs/fs .
+             cp -r $susfs/include .
+             cp -r $susfs/50_add_susfs_in_gki-android12-5.10.patch .
+             patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+             echo "[✓] SUSFS patched"
+          fi
+          
+          echo "✅ MamboSU & Hook Method Setup Complete"
 
       - name: Fix Stack Protector
         working-directory: gki/common
