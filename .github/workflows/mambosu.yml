@@ -1,15 +1,15 @@
-name: zixine Build (mambosu + SUSFS)
+name: Zixine Matrix Build (MamboSU/Kowsu Strict)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_name:
-        description: 'Custom Kernel Name (Leave empty for default)'
+        description: 'Nama Kernel'
         required: false
         default: ''
         type: string
       release_status:
-        description: 'Release Status'
+        description: 'Status Rilis'
         required: true
         type: choice
         default: 'RELEASE'
@@ -17,32 +17,31 @@ on:
           - 'RELEASE'
           - 'BETA'
       clang_version:
-        description: 'Select Clang Version'
+        description: 'Versi Clang'
         required: true
         type: choice
         options:
           - 'r536225 (Clang 19)'
           - 'r547379 (Clang 20)'
-      performance_patch:
-        description: 'Select Device SoC for Performance Tuning'
-        required: true
-        type: choice
-        default: 'Universal'
-        options:
-          - 'Snapdragon'
-          - 'MediaTek'
-          - 'Universal'
+      # Input Performance Patch DIHAPUS (Diganti Matrix)
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Kernel GKI
+  build-matrix:
+    name: Build ${{ matrix.profile }}
     runs-on: ubuntu-22.04
 
+    # --- JALANKAN 3 WORKFLOW SEKALIGUS ---
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [Snapdragon, MediaTek, Universal]
+    # -------------------------------------
+
     steps:
-      - name: Free disk space
+      - name: 1. Persiapan Disk
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 8192
@@ -51,39 +50,39 @@ jobs:
           remove-android: 'true'
           remove-codeql: 'true'
 
-      - name: Checkout Repository
+      - name: 2. Checkout
         uses: actions/checkout@v4
 
-      - name: Configure Git
+      - name: 3. Setup Git Global
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
+          git config --global user.name "zixine"
+          git config --global user.email "waheid005@gmail.com"
 
-      - name: Install build tools
+      - name: 4. Install Dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
           sudo apt install -y git curl repo build-essential bc bison flex libssl-dev \
             libelf-dev python3 python3-pip unzip zip rsync libncurses-dev lld
 
-      - name: Init & Sync GKI Source
+      - name: 5. Sync GKI Source
         run: |
           mkdir gki && cd gki
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10 --depth=1
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j$(nproc --all)
 
-      - name: Fetch User Kernel Source (Zixine)
+      - name: 6. Fetch Zixine Source (MGLRU)
+        working-directory: gki/common
         run: |
-          cd gki/common
-          # Mengambil source dari zixine branch mglru sesuai request
+          # Logika Asli: zixine/mglru
           git remote add zixine https://github.com/zixine/kernel-android12-5.10.git
           git fetch -j12 zixine
           git checkout -b build-kernel zixine/mglru
 
-      - name: Apply Snapdragon Performance Patch
-        if: github.event.inputs.performance_patch == 'Snapdragon'
+      - name: 7. Apply Snapdragon Patch (Matrix)
+        if: matrix.profile == 'Snapdragon'
         working-directory: gki/common
         run: |
-          echo "🚀 [Snapdragon] Applying qcom-cpufreq-hw performance patch"
+          echo "[Snapdragon] Applying patch..."
           TARGET="drivers/cpufreq/qcom-cpufreq-hw.c"
           SRC_URL="https://raw.githubusercontent.com/Pzqqt/android_kernel_xiaomi_marble/refs/heads/melt-rebase/drivers/cpufreq/qcom-cpufreq-hw.c"
           if [ ! -f "$TARGET" ]; then
@@ -93,97 +92,55 @@ jobs:
           curl -L "$SRC_URL" -o /tmp/qcom-cpufreq-hw.c
           grep -q "qcom_cpufreq_hw" /tmp/qcom-cpufreq-hw.c || exit 1
           cp /tmp/qcom-cpufreq-hw.c "$TARGET"
-          echo "✅ [Snapdragon] Patch applied."
+          echo "[Snapdragon] Patch applied."
 
-      - name: Tweak build config
+      - name: 8. Tweak Build Config
         run: |
-          # Menghapus baris ke-2 yang mungkin berisi setting pengganggu
+          # Perintah Asli (Tidak diubah)
           sed -i '2d' gki/common/build.config.gki
 
-      
-      - name: Setup MamboSU & Hook Method
+      - name: 9. Setup Root (RapliVx + Simonpunk)
         working-directory: gki/common
         run: |
-          echo " Setup MamboSU/kowsu"
+          # Real Logic
+          echo "Setup SukiSU & SUSFS (RapliVx Base)"
+          curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
           
-          # 1. Remove existing KernelSU drivers
-          for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
-            if [ -d $KSU_PATH ]; then
-              echo "MamboSU driver found in $KSU_PATH, Removing..."
-              KSU_DIR=$(dirname "$KSU_PATH")
-              [ -f "$KSU_DIR/Kconfig" ] && sed -i '/kernelsu/d' $KSU_DIR/Kconfig
-              [ -f "$KSU_DIR/Makefile" ] && sed -i '/kernelsu/d' $KSU_DIR/Makefile
-              rm -rf $KSU_PATH
-            fi
-          done
-          echo "✅ Existing MamboSU drivers removed"
+          git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
+          rm -rf sus/.git
           
-          # 2. Setup KernelSU method
-          HOOK_METHOD="${{ github.event.inputs.hook_method }}"
+          cp -r sus/kernel_patches/fs .
+          cp -r sus/kernel_patches/include .
+          cp -r sus/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch .
           
-          if [ "$HOOK_METHOD" = "susfs" ]; then
-             echo "➡️ Mode: SuSFS (Using rsuntk/KernelSU setup -> branch susfs-rksu-master)"
-             curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s susfs-rksu-master
-          else
-             echo "➡️ Mode: Kprobes/Rissu (Using RapliVx/KernelSU setup -> branch master)"
-             curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
-          fi
-          
-          # 3. Apply Manager Support Patch manager MamboSU
-          echo "🛠️ Applying MamboSU Manager Support Patch..."
-          curl -LSs "https://raw.githubusercontent.com/Kingfinik98/gki-builder/15ddb8c469eab27491d5bb0f8f66b7fe2c15d0d7/kernel-patches/ksu/rksu-add-mambosu-manager-support.patch" -o /tmp/rksu_manager.patch
-          cd KernelSU
-          patch -p1 < /tmp/rksu_manager.patch
-          cd ..
-          echo "✅ Manager Patch Applied"
-          
-          # 4. Apply SusFS (Kernel Side) 
-          if [ "$HOOK_METHOD" = "susfs" ]; then
-             echo "➡️ Applying SusFS Kernel Patches (Simonpunk)..."
-             git clone https://gitlab.com/simonpunk/susfs4ksu/ -b gki-android12-5.10 sus
-             rm -rf sus/.git
-             susfs=sus/kernel_patches
-             cp -r $susfs/fs .
-             cp -r $susfs/include .
-             cp -r $susfs/50_add_susfs_in_gki-android12-5.10.patch .
-             patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
-             echo "[✓] SUSFS patched"
-          fi
-          
-          echo "✅ MamboSU & Hook Method Setup Complete"
+          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+          echo "[✓] SUSFS patched"
 
-      - name: Fix Stack Protector
+      - name: 10. Fixes (Stack/Module/DRM)
         working-directory: gki/common
         run: |
-          echo "🛠️ Applying manual Stack Protector fix"
+          # Stack Protector
           sed -i '/config STACKPROTECTOR_PER_TASK/{n;s/def_bool y/bool "Stack Protector per task"\n\tdefault y/;}' arch/arm64/Kconfig
           echo "# CONFIG_STACKPROTECTOR_PER_TASK is not set" >> arch/arm64/configs/gki_defconfig
-          echo "✅ Stack Protector fix applied manually."
-
-      - name: Patch module & DRM (Xiaomi Compat)
-        working-directory: gki/common
-        run: |
-          echo "🩹 Menerapkan patch kompatibilitas untuk perangkat Xiaomi"
-          # Bypass check version module agar bisa load di berbagai ROM
+          
+          # Xiaomi Module Fix
           sed -i '/pr_warn.*disagrees about version of symbol.*/,+1 s/.*/return 1;/' kernel/module.c
-          # Fix DRM atomic helper untuk display
+          
+          # DRM Fix
           sed -i '/^static int drm_atomic_check_valid_clones/,/^}/d' drivers/gpu/drm/drm_atomic_helper.c
           sed -i '/ret = drm_atomic_check_valid_clones/,/return ret;/d' drivers/gpu/drm/drm_atomic_helper.c
-          echo "✅ Perbaikan selesai"
+          
+          # Check Defconfig Clean
+          sed -i 's/check_defconfig//' build.config.gki
 
-      - name: Remove check_defconfig
-        run: |
-          echo "🧹 [Clean-Up] Deleting check_defconfig to prevent build error"
-          sed -i 's/check_defconfig//' gki/common/build.config.gki
-
-      - name: Inject All Kernel Configs
+      - name: 11. Inject Configs (Matrix Logic)
         working-directory: gki/common
         run: |
-          echo "⚙️ Menambahkan konfigurasi kernel lengkap"
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          PERFORMANCE_PATCH="${{ github.event.inputs.performance_patch }}"
+          # Menggunakan Matrix Profile sebagai pengganti Input
+          PROFILE="${{ matrix.profile }}"
           
-          # 1. Config SukiSU & SUSFS
+          # 1. Config Root
           cat >> $DEFCONFIG <<EOF
           CONFIG_KSU=y
           CONFIG_KPM=n
@@ -213,17 +170,17 @@ jobs:
           CONFIG_KRETPROBES=y
           CONFIG_KPROBE_EVENTS=y
           EOF
-
-          # 2. Config Performa (Hz Tuning)
-          if [ "$PERFORMANCE_PATCH" = "MediaTek" ]; then
-             echo "CONFIG_HZ=500" >> $DEFCONFIG
-          elif [ "$PERFORMANCE_PATCH" = "Universal" ]; then
+          
+          # 2. Config SoC (Sesuai Matrix)
+          if [ "$PROFILE" = "MediaTek" ]; then
+             echo "CONFIG_HZ=300" >> $DEFCONFIG
+          elif [ "$PROFILE" = "Universal" ]; then
              echo "CONFIG_HZ_300=y" >> $DEFCONFIG
              echo "CONFIG_CPU_FREQ=y" >> $DEFCONFIG
              echo "CONFIG_HIGH_RES_TIMERS=y" >> $DEFCONFIG
           fi
-
-          # 3. Optimasi Network & I/O (Sesuai BoltX)
+          
+          # 3. Optimasi Network/IO
           cat >> $DEFCONFIG <<EOF
           CONFIG_TMPFS_XATTR=y
           CONFIG_TMPFS_POSIX_ACL=y
@@ -245,13 +202,14 @@ jobs:
           CONFIG_BFQ_GROUP_IOSCHED=y
           EOF
 
-      - name: Set version
+      - name: 12. Set Version
         working-directory: gki/common
         run: |
           echo "" > scripts/setlocalversion
           chmod +x scripts/setlocalversion
           KERNEL_NAME_INPUT="${{ github.event.inputs.kernel_name }}"
-          PERFORMANCE_PATCH="${{ github.event.inputs.performance_patch }}"
+          # Menggunakan Matrix Profile
+          PROFILE="${{ matrix.profile }}"
 
           SUFFIX=""
           if [ -n "$KERNEL_NAME_INPUT" ]; then
@@ -259,12 +217,12 @@ jobs:
           fi
           SUFFIX="$SUFFIX"
 
-          if [ "$PERFORMANCE_PATCH" = "Snapdragon" ]; then
+          if [ "$PROFILE" = "Snapdragon" ]; then
             SUFFIX="$SUFFIX-Qcom"
-          elif [ "$PERFORMANCE_PATCH" = "MediaTek" ]; then
-            SUFFIX="$SUFFIX-Mtk"
-          elif [ "$PERFORMANCE_PATCH" = "Universal" ]; then
-            SUFFIX="$SUFFIX-Univ"
+          elif [ "$PROFILE" = "MediaTek" ]; then
+            SUFFIX="$SUFFIX-MEDIATEK"
+          elif [ "$PROFILE" = "Universal" ]; then
+            SUFFIX="$SUFFIX-Universal"
           fi
           
           echo "Setting custom kernel name: $SUFFIX"
@@ -274,10 +232,11 @@ jobs:
             echo "EXTRAVERSION = $SUFFIX" >> Makefile
           fi
 
-      - name: Setup Clang
+      - name: 13. Setup Clang (Strict 19/20)
         working-directory: gki
         run: |
           mkdir -p prebuilts-master/clang/host/linux-x86
+          # HANYA CLANG 19 DAN 20 SESUAI PERINTAH
           if [ "${{ github.event.inputs.clang_version }}" == "r536225 (Clang 19)" ]; then
             CLANG_VER="clang-r536225"
             CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz"
@@ -285,6 +244,7 @@ jobs:
             CLANG_VER="clang-r547379"
             CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/62cdcefa89e31af2d72c366e8b5ef8db84caea62/clang-r547379.tar.gz"
           fi
+          
           echo "CLANG_VER=$CLANG_VER" >> $GITHUB_ENV
           mkdir -p prebuilts-master/clang/host/linux-x86/$CLANG_VER
           cd prebuilts-master/clang/host/linux-x86
@@ -292,20 +252,71 @@ jobs:
           rm -rf clang-r416183b
           ln -sf $CLANG_VER clang-r416183b
 
-      - name: Commit changes
+      - name: 14. Commit Changes
         working-directory: gki/common
         run: |
           git add .
           git commit -m "Final clean tree before build" || true
 
-      - name: Compile
+      - name: 15. Compile
         working-directory: gki
         run: |
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image-${{ github.event.inputs.performance_patch }}
-          path: gki/out/android12-5.10/dist/Image
+      # --- BAGIAN PACKAGING (AnyKernel Zixine & Release) ---
+      
+      - name: 16. Packaging & Release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          BASE_VER=$(make -s kernelversion -C gki/common | tr -d '\n\r')
+          DATE=$(date +"%Y%m%d")
           
+          KNAME="${{ github.event.inputs.kernel_name }}"
+          [ -z "$KNAME" ] && KNAME="Zixine"
+          
+          # Nama File Zip
+          ZIP_NAME="AK3-${KNAME}-${{ matrix.profile }}-${DATE}-${BASE_VER}.zip"
+          
+          # 1. Clone Repo Zixine AnyKernel
+          git clone -q --depth=1 "https://github.com/zixine/anykernel.git" -b main anykernel
+          
+          # 2. Copy Image
+          cp gki/out/android12-5.10/dist/Image anykernel/
+          
+          # 3. Inject Version
+          sed -i "s|kernel.string=.*|kernel.string=${BASE_VER}|g" anykernel/anykernel.sh
+          
+          # 4. Zip
+          cd anykernel
+          zip -r9 "../$ZIP_NAME" ./*
+          cd ..
+          
+          # 5. UPLOAD KE REPOSITORY RELEASE (CROSS-REPO)
+          TARGET_REPO="zixine/Kernel-GKI-12-5.10-release"
+          RELEASE_TAG="${KNAME}-${DATE}"
+          
+          echo "🚀 Uploading $ZIP_NAME to $TARGET_REPO ($RELEASE_TAG)..."
+          
+          # Logic: Cek apakah Release Tag sudah ada?
+          # Jika sudah ada (misal job Snapdragon selesai duluan), kita cuma upload asset.
+          # Jika belum ada, kita buat release baru.
+          
+          if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" > /dev/null 2>&1; then
+            echo "✅ Release exists, uploading asset..."
+            gh release upload "$RELEASE_TAG" "$ZIP_NAME" --repo "$TARGET_REPO" --clobber
+          else
+            echo "🆕 Creating new release..."
+            # Catatan Rilis
+            NOTES="Build Date: $(date)
+            Clang: ${{ github.event.inputs.clang_version }}
+            Status: ${{ github.event.inputs.release_status }}"
+            
+            gh release create "$RELEASE_TAG" "$ZIP_NAME" \
+              --repo "$TARGET_REPO" \
+              --title "$RELEASE_TAG" \
+              --notes "$NOTES" \
+              --prerelease=$([ "${{ github.event.inputs.release_status }}" == "BETA" ] && echo "true" || echo "false")
+          fi
+          
+          echo "🎉 Done: $ZIP_NAME"
