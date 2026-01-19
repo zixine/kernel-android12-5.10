@@ -88,7 +88,7 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 
-const_debug unsigned int sysctl_sched_migration_cost	= 75000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 
 int sched_thermal_decay_shift;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -4950,8 +4950,8 @@ static int tg_unthrottle_up(struct task_group *tg, void *data)
 
 	cfs_rq->throttle_count--;
 	if (!cfs_rq->throttle_count) {
-		cfs_rq->throttled_clock_task_time += rq_clock_task(rq) -
-					     cfs_rq->throttled_clock_task;
+		cfs_rq->throttled_clock_pelt_time += rq_clock_task_mult(rq) -
+					     cfs_rq->throttled_clock_pelt;
 
 		/* Add cfs_rq with already running entity in the list */
 		if (cfs_rq->nr_running >= 1)
@@ -4968,7 +4968,7 @@ static int tg_throttle_down(struct task_group *tg, void *data)
 
 	/* group is entering throttled state, stop time */
 	if (!cfs_rq->throttle_count) {
-		cfs_rq->throttled_clock_task = rq_clock_task(rq);
+		cfs_rq->throttled_clock_pelt = rq_clock_task_mult(rq);
 		list_del_leaf_cfs_rq(cfs_rq);
 	}
 	cfs_rq->throttle_count++;
@@ -5386,7 +5386,7 @@ static void sync_throttle(struct task_group *tg, int cpu)
 	pcfs_rq = tg->parent->cfs_rq[cpu];
 
 	cfs_rq->throttle_count = pcfs_rq->throttle_count;
-	cfs_rq->throttled_clock_task = rq_clock_task(cpu_rq(cpu));
+	cfs_rq->throttled_clock_pelt = rq_clock_task_mult(cpu_rq(cpu));
 }
 
 /* conditionally throttle active cfs_rq's from put_prev_entity() */
@@ -9532,6 +9532,16 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	 */
 	update_sd_lb_stats(env, &sds);
 
+	/* There is no busy sibling group to pull tasks from */
+	if (!sds.busiest)
+		goto out_balanced;
+
+	busiest = &sds.busiest_stat;
+
+	/* Misfit tasks should be dealt with regardless of the avg load */
+	if (busiest->group_type == group_misfit_task)
+		goto force_balance;
+
 	if (sched_energy_enabled()) {
 		struct root_domain *rd = env->dst_rq->rd;
 		int out_balance = 1;
@@ -9542,17 +9552,6 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 					&& out_balance)
 			goto out_balanced;
 	}
-
-	local = &sds.local_stat;
-	busiest = &sds.busiest_stat;
-
-	/* There is no busy sibling group to pull tasks from */
-	if (!sds.busiest)
-		goto out_balanced;
-
-	/* Misfit tasks should be dealt with regardless of the avg load */
-	if (busiest->group_type == group_misfit_task)
-		goto force_balance;
 
 	/* ASYM feature bypasses nice load balance check */
 	if (busiest->group_type == group_asym_packing)
@@ -9565,6 +9564,8 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	 */
 	if (busiest->group_type == group_imbalanced)
 		goto force_balance;
+
+	local = &sds.local_stat;
 
 	/*
 	 * If the local group is busier than the selected busiest group
