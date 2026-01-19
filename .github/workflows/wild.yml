@@ -1,0 +1,175 @@
+name: zixine Wild Builder (Performance & Low Latency)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_name:
+        description: 'Nama Dasar Kernel'
+        required: false
+        default: 'Zixine-Elysium'
+        type: string
+      release_status:
+        description: 'Status Rilis'
+        required: true
+        type: choice
+        default: 'RELEASE'
+        options:
+          - 'RELEASE'
+          - 'BETA'
+
+permissions:
+  contents: write
+
+jobs:
+  build-wild:
+    name: Build Wild Variant
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Environment Preparation
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 10240
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Fetch Source Code
+        uses: checkout@v4
+
+      - name: Initialize Git Identity
+        run: |
+          git config --global user.name "zixine-bot"
+          git config --global user.email "bot@zixine.org"
+
+      - name: Dependency Installation
+        run: |
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y git curl repo build-essential bc bison flex libssl-dev \
+            libelf-dev python3 python3-pip unzip zip rsync libncurses-dev lld
+
+      - name: Init & Sync GKI
+        run: |
+          mkdir gki && cd gki
+          repo init -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10 --depth=1
+          repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j$(nproc --all)
+          
+      - name: Update kernel source for GKI 5.10
+        run: |
+          cd gki/common
+          git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
+          git fetch -j12 rama
+          git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
+          rm -rf drivers/staging/kernelsu
+
+      - name: Apply Infinix GT 20 Pro Camera Fix
+        working-directory: gki/common
+        run: |
+          echo "📸 Applying Infinix GT 20 Pro Camera Fix..."
+          curl -L "https://github.com/ramabondanp/android_kernel_common-5.10/commit/4fe04b60009e.patch" -o infinix_cam.patch
+          patch -p1 < infinix_cam.patch || echo "✅ Patch sudah ada."
+
+      - name: Setup Wild KernelSU
+        working-directory: gki/common
+        run: |
+          echo "🟣 Mode: Wild KernelSU"
+          rm -rf drivers/staging/kernelsu drivers/kernelsu KernelSU
+          curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
+
+      - name: Setup SuSFS (Simonpunk)
+        working-directory: gki/common
+        run: |
+          echo "🛡️ Installing SuSFS..."
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android12-5.10 susfs-git
+          cp -r susfs-git/kernel_patches/include/* include/
+          cp -r susfs-git/kernel_patches/fs/* fs/
+          cp susfs-git/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch .
+          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch || echo "⚠️ Skip SuSFS patch error..."
+
+      - name: Apply Critical Fixes (Xiaomi + Bootloop)
+        working-directory: gki/common
+        run: |
+          echo "🔧 Fixing Stack Protector (Xiaomi Anti-Bootloop)..."
+          sed -i '/config STACKPROTECTOR_PER_TASK/{n;s/def_bool y/bool "Stack Protector per task"\n\tdefault y/;}' arch/arm64/Kconfig
+          echo "🔧 Fixing Xiaomi Module Compat..."
+          sed -i '/pr_warn.*disagrees about version of symbol.*/,+1 s/.*/return 1;/' kernel/module.c
+          sed -i '/^static int drm_atomic_check_valid_clones/,/^}/d' drivers/gpu/drm/drm_atomic_helper.c
+          sed -i '/ret = drm_atomic_check_valid_clones/,/return ret;/d' drivers/gpu/drm/drm_atomic_helper.c
+          sed -i 's/check_defconfig//' build.config.gki
+
+      - name: Configure Kernel (Ultra Performance & Low Latency)
+        working-directory: gki/common
+        run: |
+          TARGET_CONFIG="arch/arm64/configs/gki_defconfig"
+          echo "⚙️ Injecting High-Responsiveness Configs..."
+          
+          cat >> $TARGET_CONFIG <<EOF
+          # KernelSU & SuSFS
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          
+          # Responsivitas Layar & Low Latency (< 17ms goal)
+          CONFIG_HZ_1000=y
+          CONFIG_PREEMPT=y
+          CONFIG_SCHED_AUTOGROUP=y
+          CONFIG_SCHED_WALT=y
+          
+          # Dynamic Performance & Battery
+          CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+          CONFIG_ENERGY_MODEL=y
+          CONFIG_CPU_IDLE=y
+          CONFIG_ARM_CPUIDLE=y
+          CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+          
+          # Optimasi Tambahan
+          CONFIG_HZ=1000
+          CONFIG_LOCALVERSION_AUTO=n
+          EOF
+
+      - name: Apply Versioning
+        working-directory: gki/common
+        run: |
+          NAME="${{ github.event.inputs.kernel_name }}"
+          [ -z "$NAME" ] && NAME="Zixine-Elysium"
+          FINAL_TAG="-${NAME}-Wild-Performance"
+          echo "" > scripts/setlocalversion
+          sed -i "s/^EXTRAVERSION *=.*/EXTRAVERSION = $FINAL_TAG/" Makefile
+
+      - name: Setup Compiler (Clang 12)
+        working-directory: gki
+        run: |
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r416183b
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2021/clang-r416183b.tar.gz" | tar -xz -C "prebuilts-master/clang/host/linux-x86/clang-r416183b"
+          cd prebuilts-master/clang/host/linux-x86
+          ln -s clang-r416183b clang-r563880b
+
+      - name: Execute Build
+        working-directory: gki
+        run: |
+          export KMI_SYMBOL_LIST_STRICT_MODE=0
+          export KMI_ENFORCED=0
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+
+      - name: Create AnyKernel3 Zip
+        run: |
+          BASE_VER=$(make -s kernelversion -C gki/common | tr -d '\n\r')
+          TIMESTAMP=$(date +"%Y%m%d")
+          ZIP_NAME="AK3-Wild-Performance-${TIMESTAMP}-${BASE_VER}.zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          
+          git clone https://github.com/zixine/anykernel AnyKernel3
+          cp $(find gki/out -type f -name "Image" | head -n 1) AnyKernel3/
+          cd AnyKernel3 && zip -r9 "../$ZIP_NAME" * -x .git .gitignore
+
+      - name: Upload Artifact
+        uses: upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
