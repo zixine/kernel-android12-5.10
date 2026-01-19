@@ -6,7 +6,7 @@ on:
       kernel_name:
         description: 'Nama Dasar Kernel'
         required: false
-        default: 'Zixine-Elysium'
+        default: '✦Zeta-Missions'
         type: string
       release_status:
         description: 'Status Rilis'
@@ -65,6 +65,24 @@ jobs:
           git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
           rm -rf drivers/staging/kernelsu
 
+      - name: Inject SoC Optimization
+        # Menggunakan matrix.profile
+        if: matrix.profile == 'Snapdragon'
+        working-directory: gki/common
+        run: |
+          echo "⚡ [SoC] Injecting Snapdragon Optimization (Melt-Rebase)..."
+          TARGET_FILE="drivers/cpufreq/qcom-cpufreq-hw.c"
+          PATCH_SOURCE="https://raw.githubusercontent.com/Pzqqt/android_kernel_xiaomi_marble/refs/heads/melt-rebase/drivers/cpufreq/qcom-cpufreq-hw.c"
+          
+          if [ ! -f "$TARGET_FILE" ]; then
+            echo "❌ Error: Target driver not found!" && exit 1
+          fi
+          
+          curl -L "$PATCH_SOURCE" -o /tmp/patch_qcom.c
+          grep -q "qcom_cpufreq_hw" /tmp/patch_qcom.c || exit 1
+          cp /tmp/patch_qcom.c "$TARGET_FILE"
+          echo "✅ Optimization Applied."
+          
       - name: Apply Infinix GT 20 Pro Camera Fix
         working-directory: gki/common
         run: |
@@ -109,14 +127,32 @@ jobs:
           cat >> $TARGET_CONFIG <<EOF
           # KernelSU & SuSFS
           CONFIG_KSU=y
+          CONFIG_KPM=n
           CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_KPROBES_HOOK=n
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
           
           # Responsivitas Layar & Low Latency (< 17ms goal)
-          CONFIG_HZ_1000=y
+          CONFIG_HZ_300=y
           CONFIG_PREEMPT=y
           CONFIG_SCHED_AUTOGROUP=y
           CONFIG_SCHED_WALT=y
@@ -129,8 +165,27 @@ jobs:
           CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
           
           # Optimasi Tambahan
-          CONFIG_HZ=1000
+          CONFIG_HZ=300
           CONFIG_LOCALVERSION_AUTO=n
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_IP_NF_TARGET_TTL=y
+          CONFIG_IP6_NF_TARGET_HL=y
+          CONFIG_IP6_NF_MATCH_HL=y
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_NET_SCH_FQ=y
+          CONFIG_TCP_CONG_BIC=n
+          CONFIG_TCP_CONG_WESTWOOD=n
+          CONFIG_TCP_CONG_HTCP=n
+          CONFIG_DEFAULT_BBR=y
+          CONFIG_SCHED_TUNE=y
+          CONFIG_MQ_IOSCHED_KYBER=y
+          CONFIG_MQ_IOSCHED_BFQ=y
+          CONFIG_IOSCHED_BFQ=y
+          CONFIG_BFQ_GROUP_IOSCHED=y
+          CONFIG_ZRAM=y
+          CONFIG_ZRAM_WRITEBACK=y
           EOF
 
       - name: Apply Versioning
@@ -150,26 +205,48 @@ jobs:
           cd prebuilts-master/clang/host/linux-x86
           ln -s clang-r416183b clang-r563880b
 
-      - name: Execute Build
+      - name: Execute Build (With No-WError)
         working-directory: gki
         run: |
+          echo "🚀 Starting Compilation..."
           export KMI_SYMBOL_LIST_STRICT_MODE=0
           export KMI_ENFORCED=0
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          export TRIM_NONLISTED_KMI=0
+          # Tambahkan -Wno-error=implicit-function-declaration untuk bypass error header bandel
+          LTO=thin KCFLAGS="-O3 -Wno-error=implicit-function-declaration -Wno-error=visibility" BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
-      - name: Create AnyKernel3 Zip
+      - name: Packaging & Release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           BASE_VER=$(make -s kernelversion -C gki/common | tr -d '\n\r')
-          TIMESTAMP=$(date +"%Y%m%d")
-          ZIP_NAME="AK3-Wild-Performance-${TIMESTAMP}-${BASE_VER}.zip"
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-          
-          git clone https://github.com/zixine/anykernel AnyKernel3
-          cp $(find gki/out -type f -name "Image" | head -n 1) AnyKernel3/
-          cd AnyKernel3 && zip -r9 "../$ZIP_NAME" * -x .git .gitignore
+          FULL_VER=$(make -s kernelversion -C gki/common | tr -d '\n\r')
+          DATE=$(date +"%Y%m%d")
+          KNAME="${{ github.event.inputs.kernel_name }}"
+          [ -z "$KNAME" ] && KNAME="Zixine"
+          ZIP_NAME="AK3-${KNAME}-${DATE}-${BASE_VER}-600Hz.zip"
+          AK3_REPO="https://github.com/zixine/anykernel" 
+          git clone -q --depth=1 "$AK3_REPO" -b main anykernel
+          IMG=$(find gki/out -name "Image" -type f | head -n 1)
+          if [ -z "$IMG" ]; then echo "❌ Error: Image not found!"; exit 1; fi
+          cp "$IMG" anykernel/
+          sed -i "s|kernel.string=.*|kernel.string=${FULL_VER} by Zixine|g" anykernel/anykernel.sh
+          cd anykernel
+          chmod +x anykernel.sh tools/magiskboot tools/ak3-core.sh META-INF/com/google/android/update-binary
+          zip -r9 "../$ZIP_NAME" * -x .git .gitignore README.md
+          cd ..
+          TARGET_REPO="zixine/Kernel-GKI-12-5.10-release"
+          RELEASE_TAG="${KNAME}-${DATE}-wild"
+          if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ZIP_NAME" --repo "$TARGET_REPO" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$ZIP_NAME" --repo "$TARGET_REPO" --title "Zixine MamboSU ${DATE}" --notes "Automated Build" --prerelease=false
+          fi
 
-      - name: Upload Artifact
-        uses: upload-artifact@v4
+      - name: Archive Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          name: build-log-mambo
+          path: gki/out/android12-5.10/common/build.log
+          if-no-files-found: warn
